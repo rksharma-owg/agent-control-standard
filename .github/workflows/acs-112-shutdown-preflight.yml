@@ -1,0 +1,59 @@
+name: ACS 112 bounded shutdown preflight
+on:
+  push:
+    branches: [codex/acs-112-shutdown-preflight-20261015]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [patch, integration]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select and verify tested revision
+        env:
+          TARGET: ${{ matrix.target }}
+          PATCH_SHA: a52aef5381bd98c2484aa00d6991d8cd7a837c8c
+          BASE_SHA: 685367dfc722ecb7cbc9f0fb2ef9e4f9cd19daff
+        run: |
+          set -euo pipefail
+          git fetch https://github.com/GenAI-Security-Project/agent-control-standard.git "$BASE_SHA"
+          TEST_SHA="$PATCH_SHA"
+          if [ "$TARGET" = integration ]; then TEST_SHA="$BASE_SHA"; fi
+          git checkout --detach "$TEST_SHA"
+          test "$(git rev-parse HEAD)" = "$TEST_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" "$PATCH_SHA"
+          printf 'Patch SHA: %s\nBaseline SHA: %s\nTested SHA: %s\n' "$PATCH_SHA" "$BASE_SHA" "$(git rev-parse HEAD)"
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: "1.3.11"
+      - name: Install and verify reference implementation
+        working-directory: reference-implementations/agt
+        run: |
+          bun --version
+          bun install --frozen-lockfile
+          bun add --global trash-cli@7.2.0
+          bun run typecheck
+          bun test
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.9.9"
+      - name: Verify guards and PR site build
+        env:
+          GITHUB_PAGES_URL: https://genai-security-project.github.io/agent-control-standard/docs/
+        run: |
+          set -euo pipefail
+          uv sync --locked
+          uv run python --version
+          uv run pytest -v
+          uv run --no-dev mkdocs build --strict -d _site/docs
+          uv run --no-dev python tools/render_landing.py landing _site
+          uv run --no-dev python tools/publish_schemas.py specification _site/schema
+          python3 tools/build_roadmap_data.py --data /tmp/acs112-missing.json --fixture tests/fixtures/roadmap-data.json --out _site/roadmap/roadmap.json --repo-root . --event pull_request --source manual --preview false --render-enabled false --commit "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --published-url https://genai-security-project.github.io/agent-control-standard/roadmap/roadmap.json
